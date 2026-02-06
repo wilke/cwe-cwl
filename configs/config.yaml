@@ -20,9 +20,11 @@ auth:
   validate_user_tokens: true
   workspace_url: "https://p3.theseed.org/services/Workspace"
   user_service_url: "https://user.patricbrc.org"
+  admin_users: []  # User IDs or usernames allowed to access admin APIs
 
 bvbrc:
   app_service_url: "https://p3.theseed.org/services/app_service"
+  app_service_timeout: 30s
   database_dsn: ""  # Set via CWE_BVBRC_DATABASE_DSN env var
   cwl_step_runner_id: "CWLStepRunner"
 
@@ -32,7 +34,7 @@ storage:
   shock_url: "https://p3.theseed.org/services/Shock"
 
 executor:
-  mode: "bvbrc"  # "bvbrc" or "local"
+  mode: "bvbrc"  # "bvbrc", "app_service", or "local"
   max_retries: 3
   retry_delay: 30s
   poll_interval: 5s

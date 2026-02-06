@@ -19,9 +19,11 @@ auth:
   validate_user_tokens: false  # Disable auth for development
   workspace_url: "http://localhost:8081/services/Workspace"
   user_service_url: "http://localhost:8082"
+  admin_users: []
 
 bvbrc:
   app_service_url: "http://localhost:8083/services/app_service"
+  app_service_timeout: 5s
   database_dsn: "postgres://localhost:5432/bvbrc_dev?sslmode=disable"
   cwl_step_runner_id: "CWLStepRunner"
 
@@ -31,7 +33,7 @@ storage:
   shock_url: "http://localhost:8084/services/Shock"
 
 executor:
-  mode: "local"  # Use local executor for development
+  mode: "local"  # "bvbrc", "app_service", or "local"
   max_retries: 1
   retry_delay: 5s
   poll_interval: 2s

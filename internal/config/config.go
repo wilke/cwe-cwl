@@ -42,17 +42,19 @@ type RedisConfig struct {
 
 // AuthConfig holds authentication configuration.
 type AuthConfig struct {
-	ServiceToken       string `mapstructure:"service_token"`
-	ValidateUserTokens bool   `mapstructure:"validate_user_tokens"`
-	WorkspaceURL       string `mapstructure:"workspace_url"`
-	UserServiceURL     string `mapstructure:"user_service_url"`
+	ServiceToken       string   `mapstructure:"service_token"`
+	ValidateUserTokens bool     `mapstructure:"validate_user_tokens"`
+	WorkspaceURL       string   `mapstructure:"workspace_url"`
+	UserServiceURL     string   `mapstructure:"user_service_url"`
+	AdminUsers         []string `mapstructure:"admin_users"`
 }
 
 // BVBRCConfig holds BV-BRC integration configuration.
 type BVBRCConfig struct {
-	AppServiceURL   string `mapstructure:"app_service_url"`
-	DatabaseDSN     string `mapstructure:"database_dsn"`
-	CWLStepRunnerID string `mapstructure:"cwl_step_runner_id"`
+	AppServiceURL     string        `mapstructure:"app_service_url"`
+	AppServiceTimeout time.Duration `mapstructure:"app_service_timeout"`
+	DatabaseDSN       string        `mapstructure:"database_dsn"`
+	CWLStepRunnerID   string        `mapstructure:"cwl_step_runner_id"`
 }
 
 // StorageConfig holds file storage configuration.
@@ -64,26 +66,26 @@ type StorageConfig struct {
 
 // ExecutorConfig holds executor configuration.
 type ExecutorConfig struct {
-	Mode           string        `mapstructure:"mode"`            // "bvbrc" or "local"
-	MaxRetries     int           `mapstructure:"max_retries"`
-	RetryDelay     time.Duration `mapstructure:"retry_delay"`
-	PollInterval   time.Duration `mapstructure:"poll_interval"`
-	DefaultCPU     int           `mapstructure:"default_cpu"`
-	DefaultMemory  int           `mapstructure:"default_memory"`  // MB
-	DefaultRuntime int           `mapstructure:"default_runtime"` // seconds
+	Mode           string          `mapstructure:"mode"` // "bvbrc" or "local"
+	MaxRetries     int             `mapstructure:"max_retries"`
+	RetryDelay     time.Duration   `mapstructure:"retry_delay"`
+	PollInterval   time.Duration   `mapstructure:"poll_interval"`
+	DefaultCPU     int             `mapstructure:"default_cpu"`
+	DefaultMemory  int             `mapstructure:"default_memory"`  // MB
+	DefaultRuntime int             `mapstructure:"default_runtime"` // seconds
 	Container      ContainerConfig `mapstructure:"container"`
 }
 
 // ContainerConfig holds container runtime configuration.
 type ContainerConfig struct {
-	Runtime        string `mapstructure:"runtime"`         // "docker", "podman", "apptainer"
-	ApptainerPath  string `mapstructure:"apptainer_path"`  // Path to apptainer/singularity binary
-	DockerPath     string `mapstructure:"docker_path"`     // Path to docker binary
-	PodmanPath     string `mapstructure:"podman_path"`     // Path to podman binary
-	CacheDir       string `mapstructure:"cache_dir"`       // Container image cache directory
-	PullPolicy     string `mapstructure:"pull_policy"`     // "always", "if-not-present", "never"
-	GPUEnabled     bool   `mapstructure:"gpu_enabled"`     // Enable GPU passthrough
-	GPURuntime     string `mapstructure:"gpu_runtime"`     // "nvidia", "amd"
+	Runtime       string `mapstructure:"runtime"`        // "docker", "podman", "apptainer"
+	ApptainerPath string `mapstructure:"apptainer_path"` // Path to apptainer/singularity binary
+	DockerPath    string `mapstructure:"docker_path"`    // Path to docker binary
+	PodmanPath    string `mapstructure:"podman_path"`    // Path to podman binary
+	CacheDir      string `mapstructure:"cache_dir"`      // Container image cache directory
+	PullPolicy    string `mapstructure:"pull_policy"`    // "always", "if-not-present", "never"
+	GPUEnabled    bool   `mapstructure:"gpu_enabled"`    // Enable GPU passthrough
+	GPURuntime    string `mapstructure:"gpu_runtime"`    // "nvidia", "amd"
 }
 
 // Load reads configuration from file and environment variables.
@@ -106,8 +108,10 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("auth.validate_user_tokens", true)
 	v.SetDefault("auth.workspace_url", "https://p3.theseed.org/services/Workspace")
 	v.SetDefault("auth.user_service_url", "https://user.patricbrc.org")
+	v.SetDefault("auth.admin_users", []string{})
 
 	v.SetDefault("bvbrc.app_service_url", "https://p3.theseed.org/services/app_service")
+	v.SetDefault("bvbrc.app_service_timeout", 30*time.Second)
 	v.SetDefault("bvbrc.cwl_step_runner_id", "CWLStepRunner")
 
 	v.SetDefault("storage.local_path", "/data/cwe-cwl/uploads")

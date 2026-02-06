@@ -76,9 +76,62 @@ func (s *Server) setupRoutes() chi.Router {
 		// File operations
 		r.Post("/upload", s.handler.UploadFile)
 		r.Get("/files/{id}", s.handler.DownloadFile)
+
+		// Admin routes
+		r.Route("/admin", func(r chi.Router) {
+			r.Use(s.AdminMiddleware)
+
+			r.Route("/workflows", func(r chi.Router) {
+				r.Get("/", s.handler.AdminListWorkflows)
+				r.Get("/{id}", s.handler.AdminGetWorkflow)
+				r.Delete("/{id}", s.handler.AdminCancelWorkflow)
+				r.Post("/{id}/rerun", s.handler.AdminRerunWorkflow)
+				r.Get("/{id}/steps", s.handler.AdminGetWorkflowSteps)
+				r.Post("/{id}/steps/{step_id}/requeue", s.handler.AdminRequeueStep)
+			})
+		})
 	})
 
 	return r
+}
+
+// AdminMiddleware restricts access to admin users.
+func (s *Server) AdminMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// If auth is disabled, allow admin endpoints in dev mode.
+		if !s.config.Auth.ValidateUserTokens {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		user := auth.GetUserFromContext(r.Context())
+		if user == nil {
+			http.Error(w, "missing authentication token", http.StatusUnauthorized)
+			return
+		}
+
+		if !s.isAdminUser(user) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) isAdminUser(user *auth.UserInfo) bool {
+	if user == nil {
+		return false
+	}
+	for _, admin := range s.config.Auth.AdminUsers {
+		if admin == "" {
+			continue
+		}
+		if admin == user.UserID || admin == user.Username || admin == user.Email {
+			return true
+		}
+	}
+	return false
 }
 
 // AuthMiddleware validates the authentication token.

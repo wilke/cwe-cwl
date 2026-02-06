@@ -8,8 +8,8 @@ CWE-CWL provides a workflow execution engine that:
 
 - Parses and validates CWL v1.2 documents
 - Builds DAGs from workflow step dependencies
-- Submits each step as a BV-BRC Task to the SLURM cluster
-- Monitors execution via Redis pub/sub events
+- Submits each step as a BV-BRC Task via app_service (CWLStepRunner) for SLURM execution
+- Monitors execution via BV-BRC task status (app_service API; optional Redis events)
 - Stores workflow state in MongoDB for persistence and recovery
 
 ## Components
@@ -96,6 +96,19 @@ export BVBRC_TOKEN="your-p3-token"
 | POST | `/api/v1/validate-inputs` | Validate input files |
 | POST | `/api/v1/upload` | Upload file to local storage |
 | GET | `/api/v1/files/{id}` | Download cached file |
+
+## Admin REST API
+
+Admin endpoints require a user in `auth.admin_users`.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/admin/workflows` | List workflows across users |
+| GET | `/api/v1/admin/workflows/{id}` | Get workflow status across users |
+| DELETE | `/api/v1/admin/workflows/{id}` | Cancel workflow across users |
+| POST | `/api/v1/admin/workflows/{id}/rerun` | Rerun workflow across users |
+| GET | `/api/v1/admin/workflows/{id}/steps` | List steps across users |
+| POST | `/api/v1/admin/workflows/{id}/steps/{step_id}/requeue` | Requeue a step (optional `scatter_index=0,1`) |
 
 ## Configuration
 

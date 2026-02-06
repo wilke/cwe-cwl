@@ -64,6 +64,11 @@ func main() {
 		defer db.Close()
 
 		exec = executor.NewBVBRCExecutor(cfg, db, redisClient)
+	} else if cfg.Executor.Mode == "app_service" {
+		if cfg.Auth.ServiceToken == "" {
+			log.Fatalf("Missing CWE_AUTH_SERVICE_TOKEN for app_service executor")
+		}
+		exec = executor.NewAppServiceExecutor(cfg)
 	} else {
 		// Local executor for development
 		exec = executor.NewLocalExecutor("/tmp/cwe-cwl-work")
@@ -290,6 +295,8 @@ func (sr *SchedulerRunner) scheduleReadyNodes(ctx context.Context, workflowDAG *
 			continue
 		}
 		node.Inputs = inputs
+		node.Owner = run.Owner
+		node.OutputPath = run.OutputPath
 
 		// Execute the node
 		if err := sr.executor.Execute(ctx, node); err != nil {

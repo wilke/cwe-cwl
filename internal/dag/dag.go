@@ -24,10 +24,12 @@ const (
 type Node struct {
 	ID           string
 	StepID       string
-	ScatterIndex []int              // nil for non-scattered, index for scattered
+	ScatterIndex []int // nil for non-scattered, index for scattered
 	Status       NodeStatus
 	Inputs       map[string]interface{}
 	Outputs      map[string]interface{}
+	Owner        string
+	OutputPath   string
 	Dependencies []string // IDs of nodes this node depends on
 	Dependents   []string // IDs of nodes that depend on this node
 	Step         *cwl.WorkflowStep

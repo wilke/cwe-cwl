@@ -143,6 +143,8 @@ GitHub repository: `github.com/wilke/cwe-cwl`
 | GET | `/admin/workflows/{id}` | Get workflow status across users |
 | DELETE | `/admin/workflows/{id}` | Cancel workflow across users |
 | POST | `/admin/workflows/{id}/rerun` | Rerun workflow across users |
+| GET | `/admin/workflows/{id}/steps` | List steps across users |
+| POST | `/admin/workflows/{id}/steps/{step_id}/requeue` | Requeue a step (optional `scatter_index=0,1`) |
 
 **Storage modes**: Files can be in Workspace, Shock, or server local storage. Local storage enables users without direct backend permissions.
 

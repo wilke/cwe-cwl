@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/BV-BRC/cwe-cwl/internal/config"
 	"github.com/BV-BRC/cwe-cwl/internal/cwl"
+	"github.com/BV-BRC/cwe-cwl/internal/dag"
 	"github.com/BV-BRC/cwe-cwl/internal/state"
 	"github.com/BV-BRC/cwe-cwl/pkg/auth"
 )
@@ -199,6 +201,7 @@ func (h *Handler) ListWorkflows(w http.ResponseWriter, r *http.Request) {
 // GetWorkflow handles getting workflow status.
 func (h *Handler) GetWorkflow(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	user := auth.GetUserFromContext(ctx)
 	id := chi.URLParam(r, "id")
 
 	run, err := h.store.GetWorkflowRun(ctx, id)
@@ -208,6 +211,10 @@ func (h *Handler) GetWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	if run == nil {
 		h.errorResponse(w, "workflow not found", http.StatusNotFound)
+		return
+	}
+	if !h.isOwner(user, run) {
+		h.errorResponse(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -243,6 +250,7 @@ func (h *Handler) GetWorkflow(w http.ResponseWriter, r *http.Request) {
 // CancelWorkflow handles workflow cancellation.
 func (h *Handler) CancelWorkflow(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	user := auth.GetUserFromContext(ctx)
 	id := chi.URLParam(r, "id")
 
 	run, err := h.store.GetWorkflowRun(ctx, id)
@@ -252,6 +260,10 @@ func (h *Handler) CancelWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	if run == nil {
 		h.errorResponse(w, "workflow not found", http.StatusNotFound)
+		return
+	}
+	if !h.isOwner(user, run) {
+		h.errorResponse(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -289,6 +301,10 @@ func (h *Handler) RerunWorkflow(w http.ResponseWriter, r *http.Request) {
 		h.errorResponse(w, "workflow not found", http.StatusNotFound)
 		return
 	}
+	if !h.isOwner(user, run) {
+		h.errorResponse(w, "forbidden", http.StatusForbidden)
+		return
+	}
 
 	// Create new run with same inputs
 	newRunID := uuid.New().String()
@@ -322,7 +338,22 @@ func (h *Handler) RerunWorkflow(w http.ResponseWriter, r *http.Request) {
 // GetWorkflowSteps handles getting all step statuses.
 func (h *Handler) GetWorkflowSteps(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	user := auth.GetUserFromContext(ctx)
 	id := chi.URLParam(r, "id")
+
+	run, err := h.store.GetWorkflowRun(ctx, id)
+	if err != nil {
+		h.errorResponse(w, "failed to get workflow", http.StatusInternalServerError)
+		return
+	}
+	if run == nil {
+		h.errorResponse(w, "workflow not found", http.StatusNotFound)
+		return
+	}
+	if !h.isOwner(user, run) {
+		h.errorResponse(w, "forbidden", http.StatusForbidden)
+		return
+	}
 
 	steps, err := h.store.ListStepExecutions(ctx, id)
 	if err != nil {
@@ -337,6 +368,70 @@ func (h *Handler) GetWorkflowSteps(w http.ResponseWriter, r *http.Request) {
 // GetWorkflowOutputs handles getting workflow outputs.
 func (h *Handler) GetWorkflowOutputs(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	user := auth.GetUserFromContext(ctx)
+	id := chi.URLParam(r, "id")
+
+	run, err := h.store.GetWorkflowRun(ctx, id)
+	if err != nil {
+		h.errorResponse(w, "failed to get workflow", http.StatusInternalServerError)
+		return
+	}
+	if run == nil {
+		h.errorResponse(w, "workflow not found", http.StatusNotFound)
+		return
+	}
+	if !h.isOwner(user, run) {
+		h.errorResponse(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	if run.Status != state.WorkflowCompleted {
+		h.errorResponse(w, "workflow not completed", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(run.Outputs)
+}
+
+// AdminListWorkflows lists workflows across users (admin-only).
+func (h *Handler) AdminListWorkflows(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	filter := state.WorkflowRunFilter{
+		Limit:  50,
+		Offset: 0,
+	}
+
+	if status := r.URL.Query().Get("status"); status != "" {
+		filter.Status = status
+	}
+	if workflowID := r.URL.Query().Get("workflow_id"); workflowID != "" {
+		filter.WorkflowID = workflowID
+	}
+	if owner := r.URL.Query().Get("owner"); owner != "" {
+		filter.Owner = owner
+	}
+	if limit := parseIntQuery(r, "limit", 50); limit > 0 {
+		filter.Limit = limit
+	}
+	if offset := parseIntQuery(r, "offset", 0); offset >= 0 {
+		filter.Offset = offset
+	}
+
+	runs, err := h.store.ListWorkflowRuns(ctx, filter)
+	if err != nil {
+		h.errorResponse(w, "failed to list workflows", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(runs)
+}
+
+// AdminGetWorkflow gets workflow details across users (admin-only).
+func (h *Handler) AdminGetWorkflow(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	id := chi.URLParam(r, "id")
 
 	run, err := h.store.GetWorkflowRun(ctx, id)
@@ -349,13 +444,268 @@ func (h *Handler) GetWorkflowOutputs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if run.Status != state.WorkflowCompleted {
-		h.errorResponse(w, "workflow not completed", http.StatusBadRequest)
+	progress, _ := h.store.GetRunProgress(ctx, id)
+
+	response := map[string]interface{}{
+		"id":           run.ID,
+		"workflow_id":  run.WorkflowID,
+		"status":       run.Status,
+		"owner":        run.Owner,
+		"inputs":       run.Inputs,
+		"output_path":  run.OutputPath,
+		"created_at":   run.CreatedAt,
+		"started_at":   run.StartedAt,
+		"completed_at": run.CompletedAt,
+	}
+
+	if run.ErrorMessage != "" {
+		response["error_message"] = run.ErrorMessage
+	}
+	if run.Outputs != nil {
+		response["outputs"] = run.Outputs
+	}
+	if progress != nil {
+		response["progress"] = progress
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// AdminCancelWorkflow cancels a workflow across users (admin-only).
+func (h *Handler) AdminCancelWorkflow(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := chi.URLParam(r, "id")
+
+	run, err := h.store.GetWorkflowRun(ctx, id)
+	if err != nil {
+		h.errorResponse(w, "failed to get workflow", http.StatusInternalServerError)
+		return
+	}
+	if run == nil {
+		h.errorResponse(w, "workflow not found", http.StatusNotFound)
+		return
+	}
+
+	if run.Status == state.WorkflowCompleted || run.Status == state.WorkflowFailed || run.Status == state.WorkflowCancelled {
+		h.errorResponse(w, "workflow cannot be cancelled", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.store.UpdateWorkflowRunStatus(ctx, id, state.WorkflowCancelled); err != nil {
+		h.errorResponse(w, "failed to cancel workflow", http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(run.Outputs)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "cancelled",
+		"message": "Workflow cancelled successfully",
+	})
+}
+
+// AdminRerunWorkflow reruns a workflow across users (admin-only).
+func (h *Handler) AdminRerunWorkflow(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := chi.URLParam(r, "id")
+
+	run, err := h.store.GetWorkflowRun(ctx, id)
+	if err != nil {
+		h.errorResponse(w, "failed to get workflow", http.StatusInternalServerError)
+		return
+	}
+	if run == nil {
+		h.errorResponse(w, "workflow not found", http.StatusNotFound)
+		return
+	}
+
+	owner := run.Owner
+	if override := r.URL.Query().Get("owner"); override != "" {
+		owner = override
+	}
+
+	newRunID := uuid.New().String()
+	newRun := &state.WorkflowRun{
+		ID:         newRunID,
+		WorkflowID: run.WorkflowID,
+		Owner:      owner,
+		Inputs:     run.Inputs,
+		OutputPath: run.OutputPath,
+	}
+
+	if err := h.store.CreateWorkflowRun(ctx, newRun); err != nil {
+		h.errorResponse(w, "failed to create workflow run", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(state.SubmitResponse{
+		ID:      newRunID,
+		Status:  string(state.WorkflowPending),
+		Message: "Workflow rerun submitted successfully",
+	})
+}
+
+// AdminGetWorkflowSteps lists all step executions for a workflow run (admin-only).
+func (h *Handler) AdminGetWorkflowSteps(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := chi.URLParam(r, "id")
+
+	steps, err := h.store.ListStepExecutionsFull(ctx, id)
+	if err != nil {
+		h.errorResponse(w, "failed to get workflow steps", http.StatusInternalServerError)
+		return
+	}
+
+	resp := make([]map[string]interface{}, 0, len(steps))
+	for _, step := range steps {
+		resp = append(resp, map[string]interface{}{
+			"id":              step.ID.Hex(),
+			"workflow_run_id": step.WorkflowRunID,
+			"step_id":         step.StepID,
+			"scatter_index":   step.ScatterIndex,
+			"status":          step.Status,
+			"bvbrc_task_id":   step.BVBRCTaskID,
+			"inputs":          step.Inputs,
+			"outputs":         step.Outputs,
+			"error_message":   step.ErrorMessage,
+			"created_at":      step.CreatedAt,
+			"started_at":      step.StartedAt,
+			"completed_at":    step.CompletedAt,
+			"retry_count":     step.RetryCount,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// AdminRequeueStep resets a step execution for re-run (admin-only).
+func (h *Handler) AdminRequeueStep(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	runID := chi.URLParam(r, "id")
+	stepID := chi.URLParam(r, "step_id")
+
+	scatterIndex, err := parseScatterIndex(r.URL.Query().Get("scatter_index"))
+	if err != nil {
+		h.errorResponse(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	run, err := h.store.GetWorkflowRun(ctx, runID)
+	if err != nil {
+		h.errorResponse(w, "failed to get workflow", http.StatusInternalServerError)
+		return
+	}
+	if run == nil {
+		h.errorResponse(w, "workflow not found", http.StatusNotFound)
+		return
+	}
+	if run.Status == state.WorkflowCompleted || run.Status == state.WorkflowCancelled {
+		h.errorResponse(w, "workflow cannot be requeued in current state", http.StatusBadRequest)
+		return
+	}
+	if run.DAGState == nil {
+		h.errorResponse(w, "workflow has no DAG state", http.StatusBadRequest)
+		return
+	}
+
+	exec, err := h.store.GetStepExecutionByStep(ctx, runID, stepID, scatterIndex)
+	if err != nil {
+		h.errorResponse(w, "failed to get step execution", http.StatusInternalServerError)
+		return
+	}
+	if exec == nil {
+		h.errorResponse(w, "step execution not found", http.StatusNotFound)
+		return
+	}
+
+	workflow, err := h.store.GetWorkflow(ctx, run.WorkflowID)
+	if err != nil || workflow == nil {
+		h.errorResponse(w, "workflow not found", http.StatusNotFound)
+		return
+	}
+
+	parser := cwl.NewParser()
+	docBytes, _ := json.Marshal(workflow.Document)
+	doc, err := parser.ParseBytes(docBytes)
+	if err != nil {
+		h.errorResponse(w, "failed to parse workflow", http.StatusInternalServerError)
+		return
+	}
+
+	builder := dag.NewBuilder(doc, run.Inputs)
+	workflowDAG, err := builder.Build(runID)
+	if err != nil {
+		h.errorResponse(w, "failed to build DAG", http.StatusInternalServerError)
+		return
+	}
+
+	restoreDAGFromState(workflowDAG, run.DAGState)
+
+	node := findNodeByStep(workflowDAG, stepID, scatterIndex)
+	if node == nil {
+		h.errorResponse(w, "step node not found in DAG", http.StatusNotFound)
+		return
+	}
+
+	// Prevent requeue if dependents already completed.
+	for _, depID := range node.Dependents {
+		dep := workflowDAG.GetNode(depID)
+		if dep != nil && dep.GetStatus() == dag.StatusCompleted {
+			h.errorResponse(w, "cannot requeue step with completed dependents", http.StatusConflict)
+			return
+		}
+	}
+
+	// Reset node state.
+	node.SetTaskID("")
+	node.Outputs = nil
+	node.Error = ""
+
+	if dependenciesSatisfied(workflowDAG, node) {
+		node.SetStatus(dag.StatusReady)
+	} else {
+		node.SetStatus(dag.StatusPending)
+	}
+
+	// Update DAG state in workflow run.
+	if run.DAGState.Nodes == nil {
+		run.DAGState.Nodes = make(map[string]state.NodeState)
+	}
+	run.DAGState.Nodes[node.ID] = state.NodeState{
+		ID:           node.ID,
+		StepID:       node.StepID,
+		ScatterIndex: node.ScatterIndex,
+		Status:       string(node.GetStatus()),
+		TaskID:       node.GetTaskID(),
+		Inputs:       node.Inputs,
+		Outputs:      node.Outputs,
+		Error:        node.Error,
+	}
+	if err := h.store.UpdateWorkflowRunDAGState(ctx, run.ID, run.DAGState); err != nil {
+		h.errorResponse(w, "failed to update DAG state", http.StatusInternalServerError)
+		return
+	}
+
+	if err := h.store.ResetStepExecution(ctx, exec.ID, true); err != nil {
+		h.errorResponse(w, "failed to reset step execution", http.StatusInternalServerError)
+		return
+	}
+
+	if run.Status == state.WorkflowFailed {
+		if err := h.store.UpdateWorkflowRunStatus(ctx, run.ID, state.WorkflowRunning); err != nil {
+			h.errorResponse(w, "failed to update workflow status", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "requeued",
+		"message": "Step requeued successfully",
+	})
 }
 
 // ValidateCWL handles CWL document validation.
@@ -539,4 +889,95 @@ func (h *Handler) errorResponse(w http.ResponseWriter, message string, status in
 	json.NewEncoder(w).Encode(map[string]string{
 		"error": message,
 	})
+}
+
+func (h *Handler) isOwner(user *auth.UserInfo, run *state.WorkflowRun) bool {
+	if user == nil || run == nil {
+		return true
+	}
+	return run.Owner == user.UserID || run.Owner == user.Username || run.Owner == user.Email
+}
+
+func parseIntQuery(r *http.Request, key string, def int) int {
+	val := r.URL.Query().Get(key)
+	if val == "" {
+		return def
+	}
+	parsed, err := strconv.Atoi(val)
+	if err != nil {
+		return def
+	}
+	return parsed
+}
+
+func parseScatterIndex(raw string) ([]int, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	indices := make([]int, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		v, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("invalid scatter_index value: %s", raw)
+		}
+		indices = append(indices, v)
+	}
+	return indices, nil
+}
+
+func restoreDAGFromState(d *dag.DAG, dagState *state.DAGState) {
+	if d == nil || dagState == nil {
+		return
+	}
+	for id, nodeState := range dagState.Nodes {
+		if node := d.GetNode(id); node != nil {
+			node.SetStatus(dag.NodeStatus(nodeState.Status))
+			node.SetTaskID(nodeState.TaskID)
+			node.Outputs = nodeState.Outputs
+			node.Error = nodeState.Error
+		}
+	}
+}
+
+func findNodeByStep(d *dag.DAG, stepID string, scatterIndex []int) *dag.Node {
+	for _, node := range d.Nodes {
+		if node.StepID != stepID {
+			continue
+		}
+		if scatterIndexEqual(node.ScatterIndex, scatterIndex) {
+			return node
+		}
+	}
+	return nil
+}
+
+func scatterIndexEqual(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func dependenciesSatisfied(d *dag.DAG, node *dag.Node) bool {
+	for _, depID := range node.Dependencies {
+		dep := d.GetNode(depID)
+		if dep == nil {
+			return false
+		}
+		status := dep.GetStatus()
+		if status != dag.StatusCompleted && status != dag.StatusSkipped {
+			return false
+		}
+	}
+	return true
 }

@@ -16,10 +16,10 @@ type Store struct {
 	client   *mongo.Client
 	database *mongo.Database
 
-	workflows       *mongo.Collection
-	workflowRuns    *mongo.Collection
-	stepExecutions  *mongo.Collection
-	containerMaps   *mongo.Collection
+	workflows      *mongo.Collection
+	workflowRuns   *mongo.Collection
+	stepExecutions *mongo.Collection
+	containerMaps  *mongo.Collection
 }
 
 // NewStore creates a new MongoDB store.
@@ -40,12 +40,12 @@ func NewStore(uri, dbName string) (*Store, error) {
 	db := client.Database(dbName)
 
 	store := &Store{
-		client:          client,
-		database:        db,
-		workflows:       db.Collection("workflows"),
-		workflowRuns:    db.Collection("workflow_runs"),
-		stepExecutions:  db.Collection("step_executions"),
-		containerMaps:   db.Collection("container_mappings"),
+		client:         client,
+		database:       db,
+		workflows:      db.Collection("workflows"),
+		workflowRuns:   db.Collection("workflow_runs"),
+		stepExecutions: db.Collection("step_executions"),
+		containerMaps:  db.Collection("container_mappings"),
 	}
 
 	// Create indexes
@@ -399,6 +399,70 @@ func (s *Store) ListStepExecutions(ctx context.Context, workflowRunID string) ([
 	return execs, nil
 }
 
+// ListStepExecutionsFull lists full step execution documents for a workflow run.
+func (s *Store) ListStepExecutionsFull(ctx context.Context, workflowRunID string) ([]StepExecution, error) {
+	cursor, err := s.stepExecutions.Find(ctx, bson.M{"workflow_run_id": workflowRunID})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var execs []StepExecution
+	if err := cursor.All(ctx, &execs); err != nil {
+		return nil, err
+	}
+	return execs, nil
+}
+
+// GetStepExecutionByStep retrieves a step execution by workflow run, step id, and scatter index.
+func (s *Store) GetStepExecutionByStep(ctx context.Context, runID, stepID string, scatterIndex []int) (*StepExecution, error) {
+	filter := bson.M{
+		"workflow_run_id": runID,
+		"step_id":         stepID,
+	}
+	if scatterIndex == nil {
+		filter["$or"] = []bson.M{
+			{"scatter_index": bson.M{"$exists": false}},
+			{"scatter_index": bson.M{"$size": 0}},
+			{"scatter_index": nil},
+		}
+	} else {
+		filter["scatter_index"] = scatterIndex
+	}
+
+	var exec StepExecution
+	err := s.stepExecutions.FindOne(ctx, filter).Decode(&exec)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &exec, nil
+}
+
+// ResetStepExecution resets a step execution for requeue.
+func (s *Store) ResetStepExecution(ctx context.Context, id primitive.ObjectID, incrementRetry bool) error {
+	update := bson.M{
+		"$set": bson.M{
+			"status": StepPending,
+		},
+		"$unset": bson.M{
+			"bvbrc_task_id": "",
+			"outputs":       "",
+			"error_message": "",
+			"started_at":    "",
+			"completed_at":  "",
+		},
+	}
+	if incrementRetry {
+		update["$inc"] = bson.M{"retry_count": 1}
+	}
+
+	_, err := s.stepExecutions.UpdateOne(ctx, bson.M{"_id": id}, update)
+	return err
+}
+
 // Container mapping operations
 
 // SaveContainerMapping saves or updates a container mapping.
@@ -431,8 +495,8 @@ func (s *Store) GetRunProgress(ctx context.Context, workflowRunID string) (*RunP
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: bson.M{"workflow_run_id": workflowRunID}}},
 		{{Key: "$group", Value: bson.M{
-			"_id":       "$status",
-			"count":     bson.M{"$sum": 1},
+			"_id":   "$status",
+			"count": bson.M{"$sum": 1},
 		}}},
 	}
 
