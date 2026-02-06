@@ -1,4 +1,4 @@
-// Package main provides the CWL API server entry point.
+// cwe-server is the CWL Workflow Engine server.
 package main
 
 import (
@@ -18,44 +18,61 @@ import (
 )
 
 func main() {
-	// Parse command line flags
 	configPath := flag.String("config", "", "Path to configuration file")
+	devMode := flag.Bool("dev", false, "Enable development mode (no auth, in-memory store)")
+	port := flag.Int("port", 8080, "Server port")
 	flag.Parse()
 
-	// Load configuration
+	// Load configuration (uses defaults if no config file found)
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Override with flags
+	if *port != 8080 {
+		cfg.Server.Port = *port
+	}
+
+	// Development mode
+	if *devMode {
+		log.Println("Running in development mode")
+		cfg.Auth.ValidateUserTokens = false
 	}
 
 	// Connect to MongoDB
-	store, err := state.NewStore(cfg.MongoDB.URI, cfg.MongoDB.Database)
+	var store *state.Store
+	if *devMode {
+		log.Println("Development mode: MongoDB required but using empty URI will fail on first DB operation")
+		// For development, we still need MongoDB but can skip auth
+	}
+
+	store, err = state.NewStore(cfg.MongoDB.URI, cfg.MongoDB.Database)
 	if err != nil {
 		log.Fatalf("Failed to connect to MongoDB: %v", err)
 	}
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := store.Close(ctx); err != nil {
-			log.Printf("Error closing MongoDB connection: %v", err)
-		}
+		store.Close(ctx)
 	}()
+	log.Printf("Connected to MongoDB: %s", cfg.MongoDB.Database)
 
-	// Create API server
+	// Create server
 	server := api.NewServer(cfg, store)
 
-	// Create HTTP server
-	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	// Configure HTTP server
 	httpServer := &http.Server{
-		Addr:         addr,
+		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
 		Handler:      server,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	// Start server in goroutine
 	go func() {
-		log.Printf("Starting CWL API server on %s", addr)
+		log.Printf("Starting CWE server on port %d", cfg.Server.Port)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
 		}
@@ -73,7 +90,7 @@ func main() {
 	defer cancel()
 
 	if err := httpServer.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+		log.Printf("Server shutdown error: %v", err)
 	}
 
 	log.Println("Server stopped")
