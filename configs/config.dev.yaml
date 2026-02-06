@@ -1,0 +1,40 @@
+# CWL Workflow Engine Configuration - Development
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+  read_timeout: 30s
+  write_timeout: 30s
+
+mongodb:
+  uri: "mongodb://localhost:27017"
+  database: "cwe_cwl_dev"
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 1
+
+auth:
+  validate_user_tokens: false  # Disable auth for development
+  workspace_url: "http://localhost:8081/services/Workspace"
+  user_service_url: "http://localhost:8082"
+
+bvbrc:
+  app_service_url: "http://localhost:8083/services/app_service"
+  database_dsn: "postgres://localhost:5432/bvbrc_dev?sslmode=disable"
+  cwl_step_runner_id: "CWLStepRunner"
+
+storage:
+  local_path: "/tmp/cwe-cwl/uploads"
+  workspace_url: "http://localhost:8081/services/Workspace"
+  shock_url: "http://localhost:8084/services/Shock"
+
+executor:
+  mode: "local"  # Use local executor for development
+  max_retries: 1
+  retry_delay: 5s
+  poll_interval: 2s
+  default_cpu: 1
+  default_memory: 1024
+  default_runtime: 3600

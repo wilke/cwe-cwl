@@ -1,0 +1,18 @@
+# Example job file for bwa-mem.cwl
+# Submit with: cwe-cli submit tools/bwa-mem.cwl jobs/bwa-mem-job.yaml
+
+reference:
+  class: File
+  path: /user@patricbrc.org/home/references/GCF_000005845.2_ASM584v2_genomic.fna
+
+reads_1:
+  class: File
+  path: /user@patricbrc.org/home/data/sample1_R1.fastq.gz
+
+reads_2:
+  class: File
+  path: /user@patricbrc.org/home/data/sample1_R2.fastq.gz
+
+read_group: '@RG\tID:sample1\tSM:sample1\tPL:ILLUMINA\tLB:lib1'
+
+output_name: sample1_aligned.sam

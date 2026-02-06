@@ -1,0 +1,16 @@
+# Example job file for align-reads.cwl workflow
+# Submit with: cwe-cli submit workflows/align-reads.cwl jobs/align-reads-job.yaml --output /user@patricbrc.org/home/results/
+
+reference:
+  class: File
+  path: /user@patricbrc.org/home/references/GCF_000005845.2_ASM584v2_genomic.fna
+
+reads_1:
+  class: File
+  path: /user@patricbrc.org/home/data/sample1_R1.fastq.gz
+
+reads_2:
+  class: File
+  path: /user@patricbrc.org/home/data/sample1_R2.fastq.gz
+
+sample_id: sample1

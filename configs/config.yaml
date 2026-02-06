@@ -1,0 +1,52 @@
+# CWL Workflow Engine Configuration
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  read_timeout: 30s
+  write_timeout: 30s
+
+mongodb:
+  uri: "mongodb://localhost:27017"
+  database: "cwe_cwl"
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+auth:
+  service_token: ""  # Set via CWE_AUTH_SERVICE_TOKEN env var
+  validate_user_tokens: true
+  workspace_url: "https://p3.theseed.org/services/Workspace"
+  user_service_url: "https://user.patricbrc.org"
+
+bvbrc:
+  app_service_url: "https://p3.theseed.org/services/app_service"
+  database_dsn: ""  # Set via CWE_BVBRC_DATABASE_DSN env var
+  cwl_step_runner_id: "CWLStepRunner"
+
+storage:
+  local_path: "/data/cwe-cwl/uploads"
+  workspace_url: "https://p3.theseed.org/services/Workspace"
+  shock_url: "https://p3.theseed.org/services/Shock"
+
+executor:
+  mode: "bvbrc"  # "bvbrc" or "local"
+  max_retries: 3
+  retry_delay: 30s
+  poll_interval: 5s
+  default_cpu: 1
+  default_memory: 4096  # MB
+  default_runtime: 86400  # seconds
+
+  # Container runtime configuration
+  container:
+    runtime: "apptainer"  # "docker", "podman", "apptainer"
+    apptainer_path: "apptainer"
+    docker_path: "docker"
+    podman_path: "podman"
+    cache_dir: "/data/cwe-cwl/containers"
+    pull_policy: "if-not-present"  # "always", "if-not-present", "never"
+    gpu_enabled: true
+    gpu_runtime: "nvidia"  # "nvidia" or "amd"
