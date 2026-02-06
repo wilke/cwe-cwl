@@ -159,47 +159,65 @@ func (c *JSONRPCClient) StartApp2(ctx context.Context, token, appID string, para
 		return nil, err
 	}
 
-	// Result is an array with the task as first element
-	var tasks []*BVBRCTask
+	// Result is a Task hash
+	var task BVBRCTask
+	if err := json.Unmarshal(result, &task); err != nil {
+		return nil, fmt.Errorf("failed to parse task: %w", err)
+	}
+
+	return &task, nil
+}
+
+// StartApp submits a job via AppService.start_app (simpler interface).
+func (c *JSONRPCClient) StartApp(ctx context.Context, token, appID string, params map[string]string, workspace string) (*BVBRCTask, error) {
+	rpcParams := []interface{}{
+		appID,
+		params,
+		workspace,
+	}
+
+	result, err := c.Call(ctx, token, "AppService.start_app", rpcParams)
+	if err != nil {
+		return nil, err
+	}
+
+	var task BVBRCTask
+	if err := json.Unmarshal(result, &task); err != nil {
+		return nil, fmt.Errorf("failed to parse task: %w", err)
+	}
+
+	return &task, nil
+}
+
+// QueryTasks gets the status of one or more tasks.
+// Returns a map of task_id -> Task.
+func (c *JSONRPCClient) QueryTasks(ctx context.Context, token string, taskIDs []string) (map[string]*BVBRCTask, error) {
+	result, err := c.Call(ctx, token, "AppService.query_tasks", []interface{}{taskIDs})
+	if err != nil {
+		return nil, err
+	}
+
+	var tasks map[string]*BVBRCTask
 	if err := json.Unmarshal(result, &tasks); err != nil {
-		return nil, fmt.Errorf("failed to parse task: %w", err)
+		return nil, fmt.Errorf("failed to parse tasks: %w", err)
 	}
 
-	if len(tasks) == 0 {
-		return nil, fmt.Errorf("no task returned")
-	}
-
-	return tasks[0], nil
+	return tasks, nil
 }
 
-// QueryTaskStatus gets the status of a task.
+// QueryTaskStatus gets the status of a single task (convenience wrapper).
 func (c *JSONRPCClient) QueryTaskStatus(ctx context.Context, token, taskID string) (*BVBRCTask, error) {
-	result, err := c.Call(ctx, token, "AppService.query_task_status", []interface{}{taskID})
+	tasks, err := c.QueryTasks(ctx, token, []string{taskID})
 	if err != nil {
 		return nil, err
 	}
 
-	var task BVBRCTask
-	if err := json.Unmarshal(result, &task); err != nil {
-		return nil, fmt.Errorf("failed to parse task: %w", err)
+	task, ok := tasks[taskID]
+	if !ok {
+		return nil, fmt.Errorf("task %s not found", taskID)
 	}
 
-	return &task, nil
-}
-
-// QueryTaskDetails gets detailed information about a task.
-func (c *JSONRPCClient) QueryTaskDetails(ctx context.Context, token, taskID string) (*BVBRCTask, error) {
-	result, err := c.Call(ctx, token, "AppService.query_task_details", []interface{}{taskID})
-	if err != nil {
-		return nil, err
-	}
-
-	var task BVBRCTask
-	if err := json.Unmarshal(result, &task); err != nil {
-		return nil, fmt.Errorf("failed to parse task: %w", err)
-	}
-
-	return &task, nil
+	return task, nil
 }
 
 // EnumerateTasks lists tasks for the authenticated user.
@@ -215,4 +233,164 @@ func (c *JSONRPCClient) EnumerateTasks(ctx context.Context, token string, offset
 	}
 
 	return tasks, nil
+}
+
+// TaskDetails contains detailed execution information.
+type TaskDetails struct {
+	StdoutURL string `json:"stdout_url,omitempty"`
+	StderrURL string `json:"stderr_url,omitempty"`
+	PID       int    `json:"pid,omitempty"`
+	Hostname  string `json:"hostname,omitempty"`
+	ExitCode  int    `json:"exitcode,omitempty"`
+}
+
+// GetTaskDetails gets detailed execution information about a task.
+func (c *JSONRPCClient) GetTaskDetails(ctx context.Context, token, taskID string) (*TaskDetails, error) {
+	result, err := c.Call(ctx, token, "AppService.query_task_details", []interface{}{taskID})
+	if err != nil {
+		return nil, err
+	}
+
+	var details TaskDetails
+	if err := json.Unmarshal(result, &details); err != nil {
+		return nil, fmt.Errorf("failed to parse task details: %w", err)
+	}
+
+	return &details, nil
+}
+
+// QueryTaskSummary returns task counts by status for the authenticated user.
+func (c *JSONRPCClient) QueryTaskSummary(ctx context.Context, token string) (map[string]int, error) {
+	result, err := c.Call(ctx, token, "AppService.query_task_summary", []interface{}{})
+	if err != nil {
+		return nil, err
+	}
+
+	var summary map[string]int
+	if err := json.Unmarshal(result, &summary); err != nil {
+		return nil, fmt.Errorf("failed to parse summary: %w", err)
+	}
+
+	return summary, nil
+}
+
+// KillTaskResult contains the result of killing a task.
+type KillTaskResult struct {
+	Killed int    `json:"killed"`
+	Msg    string `json:"msg"`
+}
+
+// KillTask cancels a single task.
+func (c *JSONRPCClient) KillTask(ctx context.Context, token, taskID string) (*KillTaskResult, error) {
+	result, err := c.Call(ctx, token, "AppService.kill_task", []interface{}{taskID})
+	if err != nil {
+		return nil, err
+	}
+
+	// Result is [killed, msg] tuple
+	var tuple []interface{}
+	if err := json.Unmarshal(result, &tuple); err != nil {
+		return nil, fmt.Errorf("failed to parse result: %w", err)
+	}
+
+	if len(tuple) < 2 {
+		return nil, fmt.Errorf("unexpected result format")
+	}
+
+	killed, _ := tuple[0].(float64)
+	msg, _ := tuple[1].(string)
+
+	return &KillTaskResult{
+		Killed: int(killed),
+		Msg:    msg,
+	}, nil
+}
+
+// KillTasks cancels multiple tasks.
+func (c *JSONRPCClient) KillTasks(ctx context.Context, token string, taskIDs []string) (map[string]*KillTaskResult, error) {
+	result, err := c.Call(ctx, token, "AppService.kill_tasks", []interface{}{taskIDs})
+	if err != nil {
+		return nil, err
+	}
+
+	var results map[string]*KillTaskResult
+	if err := json.Unmarshal(result, &results); err != nil {
+		return nil, fmt.Errorf("failed to parse results: %w", err)
+	}
+
+	return results, nil
+}
+
+// RerunTask resubmits a failed task.
+func (c *JSONRPCClient) RerunTask(ctx context.Context, token, taskID string) (*BVBRCTask, error) {
+	result, err := c.Call(ctx, token, "AppService.rerun_task", []interface{}{taskID})
+	if err != nil {
+		return nil, err
+	}
+
+	var task BVBRCTask
+	if err := json.Unmarshal(result, &task); err != nil {
+		return nil, fmt.Errorf("failed to parse task: %w", err)
+	}
+
+	return &task, nil
+}
+
+// BVBRCApp represents an application definition.
+type BVBRCApp struct {
+	ID          string         `json:"id"`
+	Script      string         `json:"script,omitempty"`
+	Label       string         `json:"label"`
+	Description string         `json:"description,omitempty"`
+	Parameters  []AppParameter `json:"parameters,omitempty"`
+}
+
+// AppParameter represents an application parameter definition.
+type AppParameter struct {
+	ID       string `json:"id"`
+	Label    string `json:"label,omitempty"`
+	Required int    `json:"required"`
+	Default  string `json:"default,omitempty"`
+	Desc     string `json:"desc,omitempty"`
+	Type     string `json:"type"`
+	Enum     string `json:"enum,omitempty"`
+	WSType   string `json:"wstype,omitempty"`
+}
+
+// EnumerateApps lists all available applications.
+func (c *JSONRPCClient) EnumerateApps(ctx context.Context, token string) ([]*BVBRCApp, error) {
+	result, err := c.Call(ctx, token, "AppService.enumerate_apps", []interface{}{})
+	if err != nil {
+		return nil, err
+	}
+
+	var apps []*BVBRCApp
+	if err := json.Unmarshal(result, &apps); err != nil {
+		return nil, fmt.Errorf("failed to parse apps: %w", err)
+	}
+
+	return apps, nil
+}
+
+// ServiceStatus returns the service availability status.
+func (c *JSONRPCClient) ServiceStatus(ctx context.Context, token string) (bool, string, error) {
+	result, err := c.Call(ctx, token, "AppService.service_status", []interface{}{})
+	if err != nil {
+		return false, "", err
+	}
+
+	// Result is [submission_enabled, status_message] tuple
+	var tuple []interface{}
+	if err := json.Unmarshal(result, &tuple); err != nil {
+		return false, "", fmt.Errorf("failed to parse result: %w", err)
+	}
+
+	if len(tuple) < 2 {
+		return false, "", fmt.Errorf("unexpected result format")
+	}
+
+	enabled, _ := tuple[0].(float64)
+	msg, _ := tuple[1].(string)
+
+	return enabled == 1, msg, nil
 }

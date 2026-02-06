@@ -110,15 +110,15 @@ func TestJSONRPCClient_StartApp2(t *testing.T) {
 			t.Errorf("Expected 3 params, got %d", len(req.Params))
 		}
 
-		// Return mock task
+		// Return mock task (start_app2 returns a single Task, not an array)
 		task := BVBRCTask{
 			ID:         "task-12345",
-			App:        "CWLStepRunner",
+			App:        "CWLRunner",
 			Status:     "submitted",
 			UserID:     "user@example.org",
 			SubmitTime: "2026-02-06T12:00:00Z",
 		}
-		taskJSON, _ := json.Marshal([]BVBRCTask{task})
+		taskJSON, _ := json.Marshal(task)
 
 		resp := JSONRPCResponse{
 			JSONRPC: "2.0",
@@ -159,22 +159,26 @@ func TestJSONRPCClient_QueryTaskStatus(t *testing.T) {
 		var req JSONRPCRequest
 		json.NewDecoder(r.Body).Decode(&req)
 
-		if req.Method != "AppService.query_task_status" {
-			t.Errorf("Expected method AppService.query_task_status, got %s", req.Method)
+		// query_tasks is the actual API method (takes array, returns map)
+		if req.Method != "AppService.query_tasks" {
+			t.Errorf("Expected method AppService.query_tasks, got %s", req.Method)
 		}
 
-		task := BVBRCTask{
-			ID:        "task-12345",
-			Status:    "completed",
-			StartTime: "2026-02-06T12:00:00Z",
-			CompletedTime: "2026-02-06T12:05:00Z",
+		// Return map of task_id -> Task
+		tasks := map[string]BVBRCTask{
+			"task-12345": {
+				ID:            "task-12345",
+				Status:        "completed",
+				StartTime:     "2026-02-06T12:00:00Z",
+				CompletedTime: "2026-02-06T12:05:00Z",
+			},
 		}
-		taskJSON, _ := json.Marshal(task)
+		tasksJSON, _ := json.Marshal(tasks)
 
 		resp := JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result:  taskJSON,
+			Result:  tasksJSON,
 		}
 		json.NewEncoder(w).Encode(resp)
 	}))
@@ -209,7 +213,7 @@ func TestBVBRCExecutor_SubmitJob(t *testing.T) {
 			ID:     "task-cwl-12345",
 			Status: "submitted",
 		}
-		taskJSON, _ := json.Marshal([]BVBRCTask{task})
+		taskJSON, _ := json.Marshal(task) // Single task, not array
 
 		resp := JSONRPCResponse{
 			JSONRPC: "2.0",
