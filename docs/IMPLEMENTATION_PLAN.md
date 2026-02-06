@@ -2,7 +2,7 @@
 
 ## Overview
 
-A Go-based CWL (Common Workflow Language) v1.2 workflow execution system that integrates with BV-BRC's existing SLURM infrastructure. Each CWL workflow step is submitted as a BV-BRC Task, leveraging the proven scheduling and container execution infrastructure.
+A Go-based CWL (Common Workflow Language) v1.2 workflow execution system that integrates with BV-BRC's existing SLURM infrastructure. Each CWL workflow step is submitted as a BV-BRC Task via app_service, leveraging the proven scheduling and container execution infrastructure.
 
 ## Architecture
 
@@ -135,6 +135,15 @@ GitHub repository: `github.com/wilke/cwe-cwl`
 | POST | `/upload` | Upload file to server local storage (for users without backend access) |
 | GET | `/files/{id}` | Download cached file from server |
 
+**Admin REST API:**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/admin/workflows` | List workflows across users |
+| GET | `/admin/workflows/{id}` | Get workflow status across users |
+| DELETE | `/admin/workflows/{id}` | Cancel workflow across users |
+| POST | `/admin/workflows/{id}/rerun` | Rerun workflow across users |
+
 **Storage modes**: Files can be in Workspace, Shock, or server local storage. Local storage enables users without direct backend permissions.
 
 ## Authentication Model (Hybrid)
@@ -176,6 +185,7 @@ auth:
   service_token: "eyJ..."  # Service account P3 token
   validate_user_tokens: true
   workspace_url: "https://p3.theseed.org/services/Workspace"
+  admin_users: ["admin@patricbrc.org"]
 ```
 
 ## CLI Workflow (cwe-cli)
@@ -242,11 +252,10 @@ Option B: Server-Mediated (user lacks direct backend access)
    - For each ready step:
      - Resolve container (Docker → BV-BRC mapping)
      - Build command line from CWL tool definition
-     - Create BV-BRC Task via `CWLStepRunner` application
+     - Submit BV-BRC Task via app_service API using `CWLStepRunner`
      - Task params include Workspace/Shock paths for staging
-     - Insert into BV-BRC Task table with state 'Q'
-     - Publish to Redis `task_submission` channel
-8. **Monitor**: Subscribe to Redis `task_completion` channel
+     - Receive `task_id` from app_service response
+8. **Monitor**: Subscribe to Redis `task_completion` channel when available, otherwise poll app_service task status
 9. **Complete**: When task completes, outputs are in Workspace; update DAG, schedule next steps
 10. **Finish**: When all steps done, collect workflow output paths, update status
 
@@ -267,19 +276,118 @@ New BV-BRC application that executes arbitrary CWL CommandLineTools:
 ### Task Creation (Go → BV-BRC)
 
 ```go
-// Direct insert into BV-BRC Task table
-INSERT INTO Task (
-    owner, state_code, application_id, submit_time,
-    params, req_memory, req_cpu, req_runtime,
-    container_id, output_path, output_file
-) VALUES (?, 'Q', 'CWLStepRunner', NOW(), ?, ?, ?, ?, ?, ?, ?)
+// Submit task via BV-BRC app_service API
+// Response returns a BV-BRC task_id
+POST {app_service_url}/tasks
+Authorization: <user or service token>
+{
+  application_id: "CWLStepRunner",
+  params: {...},
+  req_cpu: ...,
+  req_memory: ...,
+  req_runtime: ...,
+  container_id: ...,
+  output_path: ...,
+  output_file: ...
+}
 ```
 
-Then publish to Redis to trigger BV-BRC scheduler.
+If Redis events are emitted by BV-BRC, subscribe to `task_completion` for completion signals.
+
+### app_service API Contract (Proposed)
+
+Base URL: `bvbrc.app_service_url`
+
+Headers:
+`Authorization: <user-or-service-token>`
+`Content-Type: application/json`
+`Accept: application/json`
+
+Submit task:
+`POST /tasks`
+Request:
+```json
+{
+  "application_id": "CWLStepRunner",
+  "params": {
+    "cwl_command": ["bwa", "mem", "..."],
+    "cwl_inputs": {},
+    "cwl_outputs": {},
+    "cwl_step_id": "align",
+    "cwl_node_id": "align#scatter-0"
+  },
+  "req_cpu": 4,
+  "req_memory": 16384,
+  "req_runtime": 86400,
+  "container_id": "bwa-0.7.17",
+  "output_path": "/user@patricbrc.org/home/results/run-123",
+  "output_file": "cwl_outputs.json",
+  "owner": "user@patricbrc.org"
+}
+```
+Response:
+```json
+{
+  "task_id": 12345,
+  "state_code": "Q",
+  "status": "queued",
+  "submit_time": "2026-02-06T19:41:00Z"
+}
+```
+
+Task status:
+`GET /tasks/{task_id}`
+Response:
+```json
+{
+  "task_id": 12345,
+  "state_code": "R",
+  "status": "running",
+  "owner": "user@patricbrc.org",
+  "submit_time": "2026-02-06T19:41:00Z",
+  "start_time": "2026-02-06T19:42:30Z",
+  "end_time": null,
+  "exit_code": null,
+  "error": null
+}
+```
+
+Cancel task:
+`POST /tasks/{task_id}/cancel`
+Response:
+```json
+{
+  "task_id": 12345,
+  "state_code": "K",
+  "status": "cancelled",
+  "cancel_time": "2026-02-06T19:50:10Z"
+}
+```
+
+Task outputs:
+`GET /tasks/{task_id}/outputs`
+Response:
+```json
+{
+  "task_id": 12345,
+  "output_path": "/user@patricbrc.org/home/results/run-123",
+  "output_file": "cwl_outputs.json",
+  "outputs": {}
+}
+```
+
+Error response (all endpoints):
+```json
+{
+  "error": "message",
+  "code": "ERR_CODE",
+  "request_id": "req-uuid"
+}
+```
 
 ## Key Patterns from AWE (Adapted for BV-BRC)
 
-- **Push-based SLURM submission**: CWL service pushes tasks to BV-BRC Scheduler → SLURM via `sbatch` (differs from AWE's pull model since we use existing SLURM infrastructure)
+- **Push-based submission**: CWL service pushes tasks via app_service; BV-BRC Scheduler submits to SLURM via `sbatch` (differs from AWE's pull model since we use existing SLURM infrastructure)
 - **Dual persistence**: MongoDB for queries + BSON/JSON files for recovery (like AWE)
 - **Event-driven monitoring**: Redis pub/sub for `task_completion` events from BV-BRC
 - **Pipeline stages**: Stage data → Execute in SLURM → Collect outputs
@@ -311,7 +419,7 @@ Then publish to Redis to trigger BV-BRC scheduler.
 - DAG construction and topological sort
 
 ### Phase 2: BV-BRC Integration (Weeks 4-6)
-- BVBRCExecutor: Task creation in BV-BRC database
+- AppServiceExecutor: Task creation via BV-BRC app_service API
 - Redis event subscription for task_completion
 - CWLStepRunner Perl application
 - Container resolution and mapping
@@ -366,6 +474,311 @@ Then publish to Redis to trigger BV-BRC scheduler.
 - MongoDB 6+
 - Redis 6+
 - Libraries: `github.com/go-chi/chi`, `go.mongodb.org/mongo-driver`, `github.com/redis/go-redis`, `github.com/dop251/goja` (JS engine)
+
+## Security Considerations
+
+### Threat Model
+
+The CWL workflow system processes user-submitted workflow definitions that specify:
+- Arbitrary commands to execute in containers
+- JavaScript expressions evaluated on the server
+- File paths for input/output staging
+- Container images to pull and run
+
+This creates a significant attack surface requiring defense-in-depth.
+
+### Input Validation
+
+| Input | Validation | Limit |
+|-------|------------|-------|
+| CWL document | Schema validation against CWL v1.2 spec | Max 1MB |
+| Job file (inputs) | Type checking, path validation | Max 10MB |
+| Workflow ID | UUID format only | — |
+| File paths | No `..`, must be within allowed roots | — |
+| Scatter arrays | Cardinality limit | Max 1,000 items |
+| Request body | Size limit on all endpoints | Max 10MB |
+
+**Path Traversal Prevention:**
+```go
+// All file paths must be canonicalized and validated
+func validatePath(path string, allowedRoots []string) error {
+    clean := filepath.Clean(path)
+    if strings.Contains(clean, "..") {
+        return ErrPathTraversal
+    }
+    for _, root := range allowedRoots {
+        if strings.HasPrefix(clean, root) {
+            return nil
+        }
+    }
+    return ErrPathOutsideAllowedRoot
+}
+```
+
+### Container Security
+
+**Image Allowlist:**
+
+Only permit container images from approved registries:
+
+```yaml
+container:
+  allowed_registries:
+    - "docker.io/biocontainers/"
+    - "ghcr.io/bv-brc/"
+    - "quay.io/biocontainers/"
+  block_latest_tag: true  # Require explicit version tags
+```
+
+**Runtime Restrictions:**
+
+| Runtime | Security Flags |
+|---------|---------------|
+| Docker | `--rm`, `--read-only` (where possible), `--network=none` (if no network needed) |
+| Podman | `--rm`, rootless mode preferred, `:Z` SELinux labels |
+| Apptainer | `--containall`, `--cleanenv`, no `--writable` |
+
+**GPU Passthrough Risks:**
+- `--nv` (NVIDIA) and `--device` flags increase attack surface
+- GPU workloads should run in dedicated, isolated queues
+- Monitor for cryptomining indicators
+
+### JavaScript Expression Sandboxing
+
+The goja JavaScript engine executes user-supplied expressions. Required safeguards:
+
+```go
+// Expression execution constraints
+type ExpressionLimits struct {
+    Timeout       time.Duration // Max 5 seconds
+    MaxMemory     int64         // Max 50MB
+    MaxStackDepth int           // Max 100
+}
+
+// Disabled/restricted APIs in sandbox
+var disabledGlobals = []string{
+    "require",    // No module loading
+    "process",    // No process access
+    "eval",       // No dynamic code execution
+    "Function",   // No function constructor
+}
+```
+
+**Loop Protection:**
+- Interrupt long-running scripts via context cancellation
+- Detect infinite loops via instruction counting
+
+### Authentication & Authorization
+
+**Token Security:**
+
+| Token Type | Storage | Rotation | Scope |
+|------------|---------|----------|-------|
+| User Token | Client-side, passed in header | Per-session | User's own resources |
+| Service Token | Secrets manager (Vault/K8s) | 90 days | Task submission on behalf of users |
+
+**Never store service tokens in:**
+- Config files committed to git
+- Environment variables in Dockerfiles
+- Log output
+
+**Authorization Checks:**
+
+```go
+// Every resource access must validate ownership
+func (h *Handler) GetWorkflow(w http.ResponseWriter, r *http.Request) {
+    workflowID := chi.URLParam(r, "id")
+    userID := auth.GetUserID(r.Context())
+
+    workflow, err := h.store.GetWorkflow(workflowID)
+    if err != nil {
+        // Don't reveal whether resource exists
+        http.Error(w, "not found", http.StatusNotFound)
+        return
+    }
+
+    // CRITICAL: Verify ownership
+    if workflow.Owner != userID && !auth.IsAdmin(r.Context()) {
+        http.Error(w, "not found", http.StatusNotFound)
+        return
+    }
+    // ... return workflow
+}
+```
+
+**Admin Access:**
+- Admin users defined in config (via secrets manager)
+- All admin actions logged with full context
+- Consider requiring MFA for admin operations
+
+### Network Security
+
+| Communication | Requirement |
+|---------------|-------------|
+| Client → API Server | TLS 1.2+ required |
+| API Server → MongoDB | TLS + authentication |
+| API Server → Redis | TLS + AUTH password |
+| API Server → app_service | TLS + service token |
+| API Server → Workspace/Shock | TLS + user token |
+
+**SSRF Prevention:**
+- Validate container image URIs against allowlist
+- Block requests to internal IP ranges (10.x, 172.16.x, 192.168.x, 169.254.x)
+- Use dedicated egress proxy for external calls
+
+### Secrets Management
+
+**Required Secrets:**
+
+| Secret | Source | Never In |
+|--------|--------|----------|
+| `service_token` | Vault / K8s Secret | Config files, env vars in code |
+| `mongodb.password` | Vault / K8s Secret | Config files |
+| `redis.password` | Vault / K8s Secret | Config files |
+
+**Configuration Pattern:**
+```yaml
+# config.yaml - safe to commit
+auth:
+  service_token: "${CWE_SERVICE_TOKEN}"  # Injected at runtime
+
+# In production, use:
+# - Kubernetes Secrets mounted as files
+# - HashiCorp Vault with dynamic credentials
+# - AWS Secrets Manager / GCP Secret Manager
+```
+
+### Audit Logging
+
+**Required Audit Events:**
+
+| Event | Fields |
+|-------|--------|
+| Workflow submitted | user, workflow_id, timestamp, source_ip, cwl_hash |
+| Workflow status change | workflow_id, old_status, new_status, timestamp |
+| Task submitted | workflow_id, step_id, task_id, container_image |
+| Task completed | task_id, exit_code, duration |
+| File accessed | user, file_path, operation (read/write), timestamp |
+| Authentication failure | source_ip, attempted_user, reason, timestamp |
+| Admin action | admin_user, action, target_resource, timestamp |
+
+**Log Format (structured JSON):**
+```json
+{
+  "timestamp": "2026-02-06T19:41:00Z",
+  "level": "info",
+  "event": "workflow.submitted",
+  "user": "user@patricbrc.org",
+  "source_ip": "192.0.2.1",
+  "workflow_id": "wf-abc123",
+  "cwl_hash": "sha256:...",
+  "request_id": "req-xyz789"
+}
+```
+
+**Retention:** Minimum 90 days, or per compliance requirements.
+
+### Rate Limiting
+
+| Endpoint Category | Limit | Burst |
+|-------------------|-------|-------|
+| Workflow submission | 10/minute/user | 5 |
+| Status queries | 100/minute/user | 20 |
+| File upload | 5/minute/user | 2 |
+| Validation | 20/minute/user | 10 |
+| Admin endpoints | 50/minute/admin | 10 |
+
+**Implementation:** Use token bucket algorithm with Redis backend for distributed rate limiting.
+
+### Resource Quotas
+
+**Per-User Limits:**
+
+| Resource | Default Limit | Configurable |
+|----------|---------------|--------------|
+| Concurrent workflows | 10 | Yes |
+| Total CPU (active) | 100 cores | Yes |
+| Total memory (active) | 500 GB | Yes |
+| Storage (Workspace) | 1 TB | Via Workspace |
+| Scatter cardinality | 1,000 | Yes |
+
+**System-Wide Limits:**
+
+| Resource | Limit |
+|----------|-------|
+| Max concurrent tasks | 10,000 |
+| Max workflow DAG depth | 100 |
+| Max steps per workflow | 500 |
+
+### Denial of Service Prevention
+
+**Scatter Bombs:**
+- User submits scatter with 1M items → creates 1M tasks
+- Mitigation: Hard limit on scatter cardinality (default 1,000)
+- Validate total task count before DAG execution begins
+
+**Expression Bombs:**
+- Malicious JS: `while(true){}` or exponential string growth
+- Mitigation: Timeout (5s), memory limit (50MB), instruction counting
+
+**Large File Uploads:**
+- Mitigation: Request body size limits, streaming uploads with progress tracking
+- Abort uploads exceeding quota
+
+**Recursive Workflows:**
+- Workflow A calls Workflow B calls Workflow A
+- Mitigation: Track call stack, max depth limit (10)
+
+### Incident Response
+
+**Security Event Classification:**
+
+| Severity | Examples | Response Time |
+|----------|----------|---------------|
+| Critical | Service token compromised, container escape | Immediate |
+| High | Successful auth bypass, data exfiltration attempt | < 1 hour |
+| Medium | Repeated auth failures, quota bypass | < 4 hours |
+| Low | Invalid input attempts, minor policy violations | < 24 hours |
+
+**Runbooks Required:**
+1. Service token rotation procedure
+2. User account suspension
+3. Workflow kill-all for user
+4. Container image blocklist update
+5. Forensic log collection
+
+### Security Testing
+
+**Required Before Production:**
+
+| Test Type | Scope | Frequency |
+|-----------|-------|-----------|
+| SAST (static analysis) | All Go code | Every PR |
+| Dependency scanning | go.mod, container images | Daily |
+| DAST (dynamic) | REST API | Weekly |
+| Penetration test | Full system | Annually |
+| Container image scan | All approved images | On push |
+
+**Security-Focused Test Cases:**
+- [ ] Path traversal in file staging
+- [ ] IDOR on workflow/file access
+- [ ] JS expression timeout enforcement
+- [ ] Container image allowlist enforcement
+- [ ] SQL/NoSQL injection in queries
+- [ ] Rate limit bypass attempts
+- [ ] Token validation edge cases
+
+### Compliance Considerations
+
+If processing sensitive data (PHI, PII, controlled research data):
+
+| Requirement | Implementation |
+|-------------|----------------|
+| Data encryption at rest | MongoDB encryption, encrypted volumes |
+| Data encryption in transit | TLS everywhere |
+| Access logging | Audit log all data access |
+| Data retention | Configurable, auto-deletion |
+| Right to deletion | Workflow purge API |
 
 ---
 
