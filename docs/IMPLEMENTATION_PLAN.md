@@ -252,10 +252,9 @@ Option B: Server-Mediated (user lacks direct backend access)
 7. **Schedule Loop**:
    - Find ready steps (all dependencies satisfied)
    - For each ready step:
-     - Resolve container (Docker → BV-BRC mapping)
-     - Build command line from CWL tool definition
-     - Submit BV-BRC Task via app_service API using `CWLStepRunner`
-     - Task params include Workspace/Shock paths for staging
+     - Build `CWLJobSpec` with the CWL tool document + resolved inputs
+     - Submit to BV-BRC via `AppService.start_app2` JSON-RPC call
+     - The scheduler extracts container, resources from the CWL tool
      - Receive `task_id` from app_service response
 8. **Monitor**: Subscribe to Redis `task_completion` channel when available, otherwise poll app_service task status
 9. **Complete**: When task completes, outputs are in Workspace; update DAG, schedule next steps
@@ -263,127 +262,135 @@ Option B: Server-Mediated (user lacks direct backend access)
 
 ## BV-BRC Integration
 
-### CWLStepRunner Application
+### CWLRunner Application
 
-New BV-BRC application that executes arbitrary CWL CommandLineTools:
+The CWL service submits jobs to a registered `CWLRunner` BV-BRC application. The CWL tool document itself serves as the job specification - no intermediate conversion is needed.
 
-```perl
-# App-CWLStepRunner.pl
-# Params: cwl_command, cwl_inputs, cwl_outputs, cwl_work_dir
-# - Executes command in container
-# - Collects outputs per CWL output bindings
-# - Writes cwl_outputs.json for collection
-```
+**Key Design Decision:** The CWL tool document IS the spec. This eliminates the need for converting between CWL and BV-BRC app spec formats.
 
-### Task Creation (Go → BV-BRC)
+### Job Spec Model
 
 ```go
-// Submit task via BV-BRC app_service API
-// Response returns a BV-BRC task_id
-POST {app_service_url}/tasks
-Authorization: <user or service token>
-{
-  application_id: "CWLStepRunner",
-  params: {...},
-  req_cpu: ...,
-  req_memory: ...,
-  req_runtime: ...,
-  container_id: ...,
-  output_path: ...,
-  output_file: ...
+// CWLJobSpec - submitted to BV-BRC scheduler
+type CWLJobSpec struct {
+    Tool       *cwl.Document          // The CWL tool definition
+    Inputs     map[string]interface{} // Resolved input values
+    OutputPath string                 // Workspace path for outputs
+    OutputFile string                 // Optional output basename
+    Owner      string                 // User submitting the job
 }
 ```
 
-If Redis events are emitted by BV-BRC, subscribe to `task_completion` for completion signals.
+The scheduler extracts from the CWL tool:
+- **Container**: from `DockerRequirement` or `ApptainerRequirement`
+- **Resources**: from `ResourceRequirement` (cores, memory)
+- **Command**: from `baseCommand` + `arguments`
 
-### app_service API Contract (Proposed)
+### Task Submission (Go → BV-BRC)
 
-Base URL: `bvbrc.app_service_url`
+Uses JSON-RPC 2.0 via `AppService.start_app2`:
 
-Headers:
-`Authorization: <user-or-service-token>`
-`Content-Type: application/json`
-`Accept: application/json`
+```go
+// BVBRCExecutor.SubmitJob submits the CWL job spec
+func (e *BVBRCExecutor) SubmitJob(ctx context.Context, token string, jobSpec *bvbrc.CWLJobSpec) (string, error) {
+    taskParams := map[string]string{
+        "cwl_job_spec": string(jobSpec.ToJSON()),
+        "output_path":  jobSpec.OutputPath,
+        "container_id": jobSpec.GetContainerID(),
+        "req_cpu":      fmt.Sprintf("%d", cpu),
+        "req_memory":   fmt.Sprintf("%d", memoryMB),
+    }
+    return e.client.StartApp2(ctx, token, "CWLRunner", taskParams, startParams)
+}
+```
 
-Submit task:
-`POST /tasks`
-Request:
+### app_service JSON-RPC API
+
+Base URL: `https://p3.theseed.org/services/app_service`
+
+**Submit task via `AppService.start_app2`:**
+
 ```json
 {
-  "application_id": "CWLStepRunner",
-  "params": {
-    "cwl_command": ["bwa", "mem", "..."],
-    "cwl_inputs": {},
-    "cwl_outputs": {},
-    "cwl_step_id": "align",
-    "cwl_node_id": "align#scatter-0"
-  },
-  "req_cpu": 4,
-  "req_memory": 16384,
-  "req_runtime": 86400,
-  "container_id": "bwa-0.7.17",
-  "output_path": "/user@patricbrc.org/home/results/run-123",
-  "output_file": "cwl_outputs.json",
-  "owner": "user@patricbrc.org"
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "AppService.start_app2",
+  "params": [
+    "CWLRunner",
+    {
+      "cwl_job_spec": "{\"tool\": {...}, \"inputs\": {...}, \"output_path\": \"...\"}",
+      "output_path": "/user@patricbrc.org/home/results/run-123",
+      "container_id": "biocontainers/bwa:0.7.17",
+      "req_cpu": "4",
+      "req_memory": "16384"
+    },
+    {
+      "base_url": "https://www.bv-brc.org"
+    }
+  ]
 }
 ```
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": [{
+    "id": "12345",
+    "app": "CWLRunner",
+    "submit_time": "2026-02-06T19:41:00",
+    "status": "submitted"
+  }]
+}
+```
+
+**Query task status via `AppService.query_task_summary`:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "AppService.query_task_summary",
+  "params": [["12345"]]
+}
+```
+
 Response:
 ```json
 {
-  "task_id": 12345,
-  "state_code": "Q",
-  "status": "queued",
-  "submit_time": "2026-02-06T19:41:00Z"
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": [{
+    "id": "12345",
+    "app": "CWLRunner",
+    "status": "completed",
+    "submit_time": "2026-02-06T19:41:00",
+    "start_time": "2026-02-06T19:42:30",
+    "completed_time": "2026-02-06T19:55:00"
+  }]
 }
 ```
 
-Task status:
-`GET /tasks/{task_id}`
-Response:
+**Cancel task via `AppService.kill_task`:**
+
 ```json
 {
-  "task_id": 12345,
-  "state_code": "R",
-  "status": "running",
-  "owner": "user@patricbrc.org",
-  "submit_time": "2026-02-06T19:41:00Z",
-  "start_time": "2026-02-06T19:42:30Z",
-  "end_time": null,
-  "exit_code": null,
-  "error": null
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "AppService.kill_task",
+  "params": ["12345"]
 }
 ```
 
-Cancel task:
-`POST /tasks/{task_id}/cancel`
-Response:
+**Error response:**
 ```json
 {
-  "task_id": 12345,
-  "state_code": "K",
-  "status": "cancelled",
-  "cancel_time": "2026-02-06T19:50:10Z"
-}
-```
-
-Task outputs:
-`GET /tasks/{task_id}/outputs`
-Response:
-```json
-{
-  "task_id": 12345,
-  "output_path": "/user@patricbrc.org/home/results/run-123",
-  "output_file": "cwl_outputs.json",
-  "outputs": {}
-}
-```
-
-Error response (all endpoints):
-```json
-{
-  "error": "message",
-  "code": "ERR_CODE",
-  "request_id": "req-uuid"
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32000,
+    "message": "Task not found"
+  }
 }
 ```
 
@@ -793,7 +800,7 @@ If processing sensitive data (PHI, PII, controlled research data):
 | Phase | Description | Progress | Status |
 |-------|-------------|----------|--------|
 | Phase 1 | Core Infrastructure | 90% | ✅ Nearly Complete |
-| Phase 2 | BV-BRC Integration | 40% | 🟡 In Progress |
+| Phase 2 | BV-BRC Integration | 60% | 🟡 In Progress |
 | Phase 3 | File Validation & Output | 30% | 🟡 In Progress |
 | Phase 4 | Advanced Features | 70% | ✅ Mostly Complete |
 | Phase 5 | Production Hardening | 0% | ⬜ Not Started |
@@ -815,7 +822,7 @@ If processing sensitive data (PHI, PII, controlled research data):
 | Configuration | ✅ Done | `internal/config/config.go` |
 | Unit tests | ✅ Done | 92+ tests passing |
 
-### Phase 2: BV-BRC Integration 🟡 40%
+### Phase 2: BV-BRC Integration 🟡 60%
 
 | Component | Status | Implementation |
 |-----------|--------|----------------|
@@ -826,10 +833,12 @@ If processing sensitive data (PHI, PII, controlled research data):
 | Podman support | ✅ Done | `buildPodmanCommand()` |
 | Apptainer support | ✅ Done | `buildApptainerCommand()` |
 | Container validation | ✅ Done | `ValidateContainerRequirement()` |
+| JSON-RPC client | ✅ Done | `internal/executor/jsonrpc.go` |
+| BVBRCExecutor | ✅ Done | `internal/executor/bvbrc.go` |
+| CWLJobSpec model | ✅ Done | `internal/bvbrc/jobspec.go` |
 | Redis event publisher | ✅ Done | `internal/events/events.go` |
 | Redis event subscription | ⬜ TODO | Needs task_completion handler |
-| BV-BRC Task table insert | ⬜ TODO | Needs DB integration |
-| CWLStepRunner Perl app | ⬜ TODO | BV-BRC side implementation |
+| CWLRunner BV-BRC app | ⬜ TODO | BV-BRC side implementation |
 | End-to-end test | ⬜ TODO | Needs infrastructure |
 
 ### Phase 3: File Validation & Output 🟡 30%
@@ -895,10 +904,10 @@ internal/executor 17+ tests  ✅ PASS
 
 ### Next Priority Items
 
-1. **Redis task completion subscription** - Handle `task_completion` events
-2. **Workspace file validation** - Check file accessibility before workflow start
-3. **CWLStepRunner Perl application** - BV-BRC side implementation
-4. **End-to-end integration test** - Single-step workflow through local executor
+1. **CWLRunner BV-BRC application** - Register app that parses CWLJobSpec and executes
+2. **Redis task completion subscription** - Handle `task_completion` events
+3. **Workspace file validation** - Check file accessibility before workflow start
+4. **End-to-end integration test** - Single-step workflow through BVBRCExecutor
 5. **Subworkflow execution** - Recursive DAG building and execution
 
 ### Example CWL Tools
