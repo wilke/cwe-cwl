@@ -2,17 +2,16 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
-	"github.com/BV-BRC/cwe-cwl/internal/cwl"
+	"github.com/BV-BRC/cwe-cwl/internal/bvbrc"
 )
 
-// BVBRCExecutor executes CWL steps via BV-BRC App Service.
+// BVBRCExecutor executes CWL jobs via BV-BRC App Service.
 type BVBRCExecutor struct {
 	client       *JSONRPCClient
-	appID        string // Application ID for CWL execution (e.g., "CWLStepRunner")
+	appID        string // Application ID for CWL execution (e.g., "CWLRunner")
 	baseURL      string
 	pollInterval time.Duration
 }
@@ -22,7 +21,7 @@ type BVBRCExecutorConfig struct {
 	// AppServiceURL is the BV-BRC App Service endpoint.
 	AppServiceURL string `mapstructure:"app_service_url"`
 
-	// AppID is the BV-BRC application ID for CWL step execution.
+	// AppID is the BV-BRC application ID for CWL job execution.
 	AppID string `mapstructure:"app_id"`
 
 	// BaseURL is the BV-BRC web base URL.
@@ -36,7 +35,7 @@ type BVBRCExecutorConfig struct {
 func DefaultBVBRCExecutorConfig() BVBRCExecutorConfig {
 	return BVBRCExecutorConfig{
 		AppServiceURL: "https://p3.theseed.org/services/app_service",
-		AppID:         "CWLStepRunner",
+		AppID:         "CWLRunner",
 		BaseURL:       "https://www.bv-brc.org",
 		PollInterval:  10 * time.Second,
 	}
@@ -52,42 +51,8 @@ func NewBVBRCExecutor(cfg BVBRCExecutorConfig) *BVBRCExecutor {
 	}
 }
 
-// CWLStepParams are the parameters for a CWL step execution.
-type CWLStepParams struct {
-	// WorkflowRunID is the parent workflow run identifier.
-	WorkflowRunID string
-
-	// StepID is the CWL step identifier.
-	StepID string
-
-	// NodeID is the unique node identifier (includes scatter index).
-	NodeID string
-
-	// Command is the command line to execute.
-	Command []string
-
-	// Inputs are the resolved CWL inputs.
-	Inputs map[string]interface{}
-
-	// Outputs are the expected CWL outputs.
-	Outputs []cwl.Output
-
-	// Resources are the resource requirements (cores, memory in MB).
-	Cores  int
-	Memory int
-
-	// ContainerSpec is the container specification.
-	ContainerSpec *cwl.ContainerSpec
-
-	// OutputPath is the Workspace path for outputs.
-	OutputPath string
-
-	// Environment variables to set.
-	Environment map[string]string
-}
-
-// CWLStepResult is the result of a CWL step execution.
-type CWLStepResult struct {
+// CWLJobResult is the result of a CWL job execution.
+type CWLJobResult struct {
 	// TaskID is the BV-BRC task identifier.
 	TaskID string
 
@@ -107,63 +72,38 @@ type CWLStepResult struct {
 	Error string
 }
 
-// SubmitStep submits a CWL step for execution.
-func (e *BVBRCExecutor) SubmitStep(ctx context.Context, token string, params CWLStepParams) (string, error) {
-	// Serialize complex parameters to JSON strings (App Service requires string values)
-	commandJSON, err := json.Marshal(params.Command)
+// SubmitJob submits a CWL job spec for execution.
+// The job spec contains the CWL tool document and inputs.
+func (e *BVBRCExecutor) SubmitJob(ctx context.Context, token string, jobSpec *bvbrc.CWLJobSpec) (string, error) {
+	// Serialize the job spec to JSON
+	jobJSON, err := jobSpec.ToJSON()
 	if err != nil {
-		return "", fmt.Errorf("failed to serialize command: %w", err)
+		return "", fmt.Errorf("failed to serialize job spec: %w", err)
 	}
 
-	inputsJSON, err := json.Marshal(params.Inputs)
-	if err != nil {
-		return "", fmt.Errorf("failed to serialize inputs: %w", err)
-	}
-
-	outputsJSON, err := json.Marshal(params.Outputs)
-	if err != nil {
-		return "", fmt.Errorf("failed to serialize outputs: %w", err)
-	}
-
-	envJSON, err := json.Marshal(params.Environment)
-	if err != nil {
-		return "", fmt.Errorf("failed to serialize environment: %w", err)
-	}
-
-	// Build task parameters (all string values per App Service spec)
+	// The CWL tool document IS the spec - pass it as the job document
 	taskParams := map[string]string{
-		"cwl_workflow_run_id": params.WorkflowRunID,
-		"cwl_step_id":         params.StepID,
-		"cwl_node_id":         params.NodeID,
-		"cwl_command":         string(commandJSON),
-		"cwl_inputs":          string(inputsJSON),
-		"cwl_outputs":         string(outputsJSON),
-		"cwl_environment":     string(envJSON),
-		"output_path":         params.OutputPath,
-		"output_file":         "cwl_outputs.json",
+		"cwl_job_spec": string(jobJSON),
+		"output_path":  jobSpec.OutputPath,
 	}
 
-	// Add resource requirements
-	if params.Cores > 0 {
-		taskParams["req_cpu"] = fmt.Sprintf("%d", params.Cores)
-	}
-	if params.Memory > 0 {
-		taskParams["req_memory"] = fmt.Sprintf("%d", params.Memory)
+	if jobSpec.OutputFile != "" {
+		taskParams["output_file"] = jobSpec.OutputFile
 	}
 
-	// Add container specification
-	if params.ContainerSpec != nil {
-		taskParams["container_image"] = params.ContainerSpec.Image
-		if params.ContainerSpec.Pull != "" {
-			taskParams["container_pull"] = params.ContainerSpec.Pull
-		}
-		if params.ContainerSpec.NeedsGPU {
-			taskParams["gpu_required"] = "1"
-			taskParams["gpu_count"] = fmt.Sprintf("%d", params.ContainerSpec.GPUCount)
-			if params.ContainerSpec.CUDAMinVersion != "" {
-				taskParams["cuda_version"] = params.ContainerSpec.CUDAMinVersion
-			}
-		}
+	// Extract resource requirements from the CWL tool
+	cpu, memoryMB := jobSpec.GetResourceRequirements()
+	if cpu > 0 {
+		taskParams["req_cpu"] = fmt.Sprintf("%d", cpu)
+	}
+	if memoryMB > 0 {
+		taskParams["req_memory"] = fmt.Sprintf("%d", memoryMB)
+	}
+
+	// Extract container from the CWL tool
+	containerID := jobSpec.GetContainerID()
+	if containerID != "" {
+		taskParams["container_id"] = containerID
 	}
 
 	// Build start parameters
@@ -181,7 +121,7 @@ func (e *BVBRCExecutor) SubmitStep(ctx context.Context, token string, params CWL
 }
 
 // WaitForCompletion polls until a task completes.
-func (e *BVBRCExecutor) WaitForCompletion(ctx context.Context, token, taskID string) (*CWLStepResult, error) {
+func (e *BVBRCExecutor) WaitForCompletion(ctx context.Context, token, taskID string) (*CWLJobResult, error) {
 	ticker := time.NewTicker(e.pollInterval)
 	defer ticker.Stop()
 
@@ -199,21 +139,21 @@ func (e *BVBRCExecutor) WaitForCompletion(ctx context.Context, token, taskID str
 
 			switch task.Status {
 			case "completed":
-				return &CWLStepResult{
+				return &CWLJobResult{
 					TaskID: taskID,
 					Status: "completed",
-					// Outputs would be fetched from output_path/cwl_outputs.json
+					// Outputs would be fetched from output_path
 				}, nil
 
 			case "failed":
-				return &CWLStepResult{
+				return &CWLJobResult{
 					TaskID: taskID,
 					Status: "failed",
-					Error:  "Task failed", // Would fetch stderr for details
+					Error:  "Task failed",
 				}, nil
 
 			case "deleted", "cancelled":
-				return &CWLStepResult{
+				return &CWLJobResult{
 					TaskID: taskID,
 					Status: task.Status,
 					Error:  "Task was cancelled",

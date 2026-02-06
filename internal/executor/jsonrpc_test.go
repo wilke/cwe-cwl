@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/BV-BRC/cwe-cwl/internal/bvbrc"
+	"github.com/BV-BRC/cwe-cwl/internal/cwl"
 )
 
 func TestJSONRPCClient_Call(t *testing.T) {
@@ -188,18 +191,18 @@ func TestJSONRPCClient_QueryTaskStatus(t *testing.T) {
 	}
 }
 
-func TestBVBRCExecutor_SubmitStep(t *testing.T) {
+func TestBVBRCExecutor_SubmitJob(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req JSONRPCRequest
 		json.NewDecoder(r.Body).Decode(&req)
 
-		// Verify params contain CWL-specific fields
+		// Verify params contain CWL job spec
 		params := req.Params[1].(map[string]interface{})
-		if _, ok := params["cwl_command"]; !ok {
-			t.Error("Expected cwl_command in params")
+		if _, ok := params["cwl_job_spec"]; !ok {
+			t.Error("Expected cwl_job_spec in params")
 		}
-		if _, ok := params["cwl_inputs"]; !ok {
-			t.Error("Expected cwl_inputs in params")
+		if _, ok := params["output_path"]; !ok {
+			t.Error("Expected output_path in params")
 		}
 
 		task := BVBRCTask{
@@ -222,21 +225,28 @@ func TestBVBRCExecutor_SubmitStep(t *testing.T) {
 
 	executor := NewBVBRCExecutor(cfg)
 
-	taskID, err := executor.SubmitStep(context.Background(), "test-token", CWLStepParams{
-		WorkflowRunID: "wf-123",
-		StepID:        "align",
-		NodeID:        "align#0",
-		Command:       []string{"bwa", "mem", "-t", "4"},
-		Inputs: map[string]interface{}{
-			"reference": map[string]interface{}{
-				"class": "File",
-				"path":  "/data/ref.fa",
-			},
+	// Create a CWL tool document
+	doc := &cwl.Document{
+		Class: "CommandLineTool",
+		ID:    "bwa-mem",
+		Inputs: []cwl.Input{
+			{ID: "reference", Type: "File"},
 		},
-		OutputPath: "/user/home/output",
-	})
+	}
+
+	jobSpec, err := bvbrc.NewCWLJobSpec(doc, map[string]interface{}{
+		"reference": map[string]interface{}{
+			"class": "File",
+			"path":  "/data/ref.fa",
+		},
+	}, "/user/home/output")
 	if err != nil {
-		t.Fatalf("SubmitStep failed: %v", err)
+		t.Fatalf("NewCWLJobSpec failed: %v", err)
+	}
+
+	taskID, err := executor.SubmitJob(context.Background(), "test-token", jobSpec)
+	if err != nil {
+		t.Fatalf("SubmitJob failed: %v", err)
 	}
 
 	if taskID != "task-cwl-12345" {
