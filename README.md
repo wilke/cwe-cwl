@@ -159,6 +159,8 @@ See `configs/config.yaml` for all available options.
                                      └─────────────┘
 ```
 
+For a current mapping between the diagram and the implementation (including components not depicted like the CLI, sandbox worker, and executor backends), see [`docs/ARCHITECTURE_COMPARISON.md`](docs/ARCHITECTURE_COMPARISON.md).
+
 ## Development
 
 ```bash
