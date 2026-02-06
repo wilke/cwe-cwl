@@ -14,17 +14,17 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// BVBRCExecutor executes CWL steps as BV-BRC Tasks.
-type BVBRCExecutor struct {
+// DBExecutor executes CWL steps as BV-BRC Tasks.
+type DBExecutor struct {
 	config      *config.Config
 	db          *sql.DB
 	redis       *redis.Client
 	containerMap map[string]string // Docker image -> BV-BRC container ID
 }
 
-// NewBVBRCExecutor creates a new BV-BRC executor.
-func NewBVBRCExecutor(cfg *config.Config, db *sql.DB, redisClient *redis.Client) *BVBRCExecutor {
-	return &BVBRCExecutor{
+// NewDBExecutor creates a new BV-BRC executor.
+func NewDBExecutor(cfg *config.Config, db *sql.DB, redisClient *redis.Client) *DBExecutor {
+	return &DBExecutor{
 		config:       cfg,
 		db:           db,
 		redis:        redisClient,
@@ -33,7 +33,7 @@ func NewBVBRCExecutor(cfg *config.Config, db *sql.DB, redisClient *redis.Client)
 }
 
 // Execute starts execution of a DAG node by creating a BV-BRC Task.
-func (e *BVBRCExecutor) Execute(ctx context.Context, node *dag.Node) error {
+func (e *DBExecutor) Execute(ctx context.Context, node *dag.Node) error {
 	if node.Tool == nil {
 		return fmt.Errorf("node %s has no resolved tool", node.ID)
 	}
@@ -99,7 +99,7 @@ type TaskParams struct {
 }
 
 // buildTaskParams builds the parameters for CWLStepRunner.
-func (e *BVBRCExecutor) buildTaskParams(node *dag.Node) (map[string]interface{}, error) {
+func (e *DBExecutor) buildTaskParams(node *dag.Node) (map[string]interface{}, error) {
 	tool := node.Tool
 
 	// Build command line
@@ -156,7 +156,7 @@ func (e *BVBRCExecutor) buildTaskParams(node *dag.Node) (map[string]interface{},
 }
 
 // resolveContainer resolves a Docker image to a BV-BRC container ID.
-func (e *BVBRCExecutor) resolveContainer(ctx context.Context, tool *cwl.Document) (string, error) {
+func (e *DBExecutor) resolveContainer(ctx context.Context, tool *cwl.Document) (string, error) {
 	dockerImage := tool.GetDockerImage()
 	if dockerImage == "" {
 		// Use default container
@@ -191,7 +191,7 @@ func (e *BVBRCExecutor) resolveContainer(ctx context.Context, tool *cwl.Document
 }
 
 // createTask creates a BV-BRC Task in the database.
-func (e *BVBRCExecutor) createTask(ctx context.Context, params TaskParams) (int64, error) {
+func (e *DBExecutor) createTask(ctx context.Context, params TaskParams) (int64, error) {
 	paramsJSON, err := json.Marshal(params.Params)
 	if err != nil {
 		return 0, fmt.Errorf("failed to marshal params: %w", err)
@@ -226,7 +226,7 @@ func (e *BVBRCExecutor) createTask(ctx context.Context, params TaskParams) (int6
 }
 
 // publishTaskSubmission publishes a task submission event to Redis.
-func (e *BVBRCExecutor) publishTaskSubmission(ctx context.Context, taskID int64) error {
+func (e *DBExecutor) publishTaskSubmission(ctx context.Context, taskID int64) error {
 	event := map[string]interface{}{
 		"type":    "task_submitted",
 		"task_id": taskID,
@@ -242,7 +242,7 @@ func (e *BVBRCExecutor) publishTaskSubmission(ctx context.Context, taskID int64)
 }
 
 // GetStatus gets the status of a BV-BRC Task.
-func (e *BVBRCExecutor) GetStatus(ctx context.Context, taskID string) (dag.NodeStatus, error) {
+func (e *DBExecutor) GetStatus(ctx context.Context, taskID string) (dag.NodeStatus, error) {
 	var stateCode string
 	err := e.db.QueryRowContext(ctx,
 		"SELECT state_code FROM Task WHERE id = $1",
@@ -272,7 +272,7 @@ func (e *BVBRCExecutor) GetStatus(ctx context.Context, taskID string) (dag.NodeS
 }
 
 // GetOutputs retrieves outputs from a completed BV-BRC Task.
-func (e *BVBRCExecutor) GetOutputs(ctx context.Context, taskID string) (map[string]interface{}, error) {
+func (e *DBExecutor) GetOutputs(ctx context.Context, taskID string) (map[string]interface{}, error) {
 	var outputPath string
 	err := e.db.QueryRowContext(ctx,
 		"SELECT output_path FROM Task WHERE id = $1",
@@ -293,7 +293,7 @@ func (e *BVBRCExecutor) GetOutputs(ctx context.Context, taskID string) (map[stri
 }
 
 // Cancel cancels a running BV-BRC Task.
-func (e *BVBRCExecutor) Cancel(ctx context.Context, taskID string) error {
+func (e *DBExecutor) Cancel(ctx context.Context, taskID string) error {
 	_, err := e.db.ExecContext(ctx,
 		"UPDATE Task SET state_code = 'K' WHERE id = $1 AND state_code IN ('Q', 'S', 'R')",
 		taskID,
@@ -302,11 +302,11 @@ func (e *BVBRCExecutor) Cancel(ctx context.Context, taskID string) error {
 }
 
 // SetOwner sets the owner for tasks created by this executor.
-func (e *BVBRCExecutor) SetOwner(owner string) {
+func (e *DBExecutor) SetOwner(owner string) {
 	// Owner is set per-task, not globally
 }
 
 // SetOutputPath sets the output path for tasks.
-func (e *BVBRCExecutor) SetOutputPath(path string) {
+func (e *DBExecutor) SetOutputPath(path string) {
 	// Output path is set per-task
 }

@@ -63,7 +63,7 @@ func main() {
 		}
 		defer db.Close()
 
-		exec = executor.NewBVBRCExecutor(cfg, db, redisClient)
+		exec = executor.NewDBExecutor(cfg, db, redisClient)
 	} else if cfg.Executor.Mode == "app_service" {
 		if cfg.Auth.ServiceToken == "" {
 			log.Fatalf("Missing CWE_AUTH_SERVICE_TOKEN for app_service executor")
